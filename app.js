@@ -7,7 +7,7 @@
 
 var App = (function () {
 
-  var VERSION = '1.0.0';
+  var VERSION = '1.1.0';
 
   /* ---------------- kaarten ---------------- */
 
@@ -105,6 +105,7 @@ var App = (function () {
     g.middleOpen = false;
     g.current = startIdx;
     g.knocker = null;
+    g.endWay = null;
     g.passStreak = 0;
     g.instant = null;
     g.result = null;
@@ -143,7 +144,7 @@ var App = (function () {
       /* Noodgreep van de host voor een speler die weg is. Kloppen zorgt
          dat de ronde hoe dan ook afloopt; is er al geklopt, dan slaan we
          de beurt gewoon over. */
-      if (g.knocker === null) g.knocker = g.current;
+      if (g.knocker === null) { g.knocker = g.current; g.endWay = 'skip'; }
       g.passStreak = 0;
     } else {
       switch (a.type) {
@@ -151,17 +152,25 @@ var App = (function () {
           if (!g.middleOpen || a.i == null || a.m == null) return false;
           t = p.hand[a.i]; p.hand[a.i] = g.middle[a.m]; g.middle[a.m] = t; g.passStreak = 0; break;
         case 'swapAll':
+          /* Alle drie ruilen sluit de ronde: de rest krijgt nog één beurt.
+             De blinde ruil van de beginner telt hier niet mee, die loopt
+             via de tak hierboven. */
           if (!g.middleOpen) return false;
-          t = p.hand; p.hand = g.middle; g.middle = t; g.passStreak = 0; break;
+          t = p.hand; p.hand = g.middle; g.middle = t; g.passStreak = 0;
+          if (g.knocker === null) { g.knocker = g.current; g.endWay = 'swapAll'; }
+          break;
         case 'swapBlind':
           if (a.i == null) return false;
           t = p.hand[a.i]; p.hand[a.i] = g.blind; g.blind = t; g.passStreak = 0; break;
         case 'pass':
-          if (!g.rules.allowPass) return false;
+          /* Niks doen mag altijd in de laatste ronde nadat iemand heeft
+             geklopt of alles heeft geruild; daarbuiten alleen als de
+             huisregel het toestaat. */
+          if (!g.rules.allowPass && g.knocker === null) return false;
           g.passStreak += 1; break;
         case 'knock':
           if (g.knocker !== null) return false;
-          g.knocker = g.current; g.passStreak = 0; break;
+          g.knocker = g.current; g.endWay = 'knock'; g.passStreak = 0; break;
         default: return false;
       }
     }
@@ -173,7 +182,7 @@ var App = (function () {
     var sc = best(g.players[g.current].hand).score;
     if (g.rules.instant31 && sc === 31) { g.instant = g.current; return reveal(g); }
     if (g.knocker !== null && nextIdx(g, g.current) === g.knocker) return reveal(g);
-    if (g.rules.allowPass && g.passStreak >= activeCount(g)) {
+    if (g.rules.allowPass && g.knocker === null && g.passStreak >= activeCount(g)) {
       if (g.deck.length >= 3) {
         g.middle = [g.deck.pop(), g.deck.pop(), g.deck.pop()];
         g.passStreak = 0;
@@ -212,7 +221,7 @@ var App = (function () {
       for (k = 0; k < rows.length; k++) if (rows[k].score === min) losers.push(rows[k].i);
     }
     for (k = 0; k < losers.length; k++) deltas[losers[k]] = 1;
-    if (g.rules.knockPenalty && g.knocker !== null && deltas[g.knocker]) deltas[g.knocker] = 2;
+    if (g.rules.knockPenalty && g.endWay === 'knock' && deltas[g.knocker]) deltas[g.knocker] = 2;
     for (k in deltas) for (i = 0; i < deltas[k]; i++) loseLife(g, g.players[+k]);
 
     g.result = {
@@ -240,6 +249,7 @@ var App = (function () {
       middle: g.middleOpen ? g.middle : null,
       deck: g.deck.length,
       knocker: g.knocker,
+      endWay: g.endWay,
       instant: g.instant,
       note: g.note,
       result: g.result,
@@ -248,6 +258,16 @@ var App = (function () {
   }
 
   /* ---------------- rendering: bouwstenen ---------------- */
+
+
+  /* Hoe de ronde is dichtgegooid, in woorden. */
+  function endWayText(st, form) {
+    var w = st.endWay;
+    if (form === 'short') return w === 'swapAll' ? 'ruilde alles' : w === 'skip' ? 'overgeslagen' : 'klopte';
+    if (w === 'swapAll') return 'heeft alle drie geruild';
+    if (w === 'skip') return 'is overgeslagen';
+    return 'heeft geklopt';
+  }
 
   function cardHTML(card, o) {
     o = o || {};
@@ -343,16 +363,25 @@ var App = (function () {
       return html;
     }
 
+    var lastLap = st.knocker !== null;
     html += '<p class="sub" style="margin:0 0 10px;min-height:18px">' +
       (sel === null ? 'Tik een kaart uit je hand om te ruilen.' : 'Tik nu een middenkaart, of de blinde kaart.') + '</p>';
+
+    /* In de laatste ronde mag je ook niks doen, ook als passen normaal
+       niet mag. Buiten de laatste ronde hangt het aan de huisregel. */
+    var showPass = st.rules.allowPass || lastLap;
     html += '<div class="pair" style="margin-bottom:10px">' +
       '<button class="btn" data-act="swapAll"' + (sel !== null ? ' disabled' : '') + '>Alle drie ruilen</button>' +
-      (st.rules.allowPass ? '<button class="btn" data-act="pass"' + (sel !== null ? ' disabled' : '') + '>Passen</button>' : '') +
+      (showPass ? '<button class="btn" data-act="pass"' + (sel !== null ? ' disabled' : '') + '>' +
+        (lastLap ? 'Niks doen' : 'Passen') + '</button>' : '') +
       '</div>';
-    html += '<button class="btn danger" data-act="knock"' + (sel !== null || st.knocker !== null ? ' disabled' : '') + '>' +
-      (st.knocker !== null ? esc(st.players[st.knocker].name) + ' heeft al geklopt' : 'Kloppen') + '</button>';
-    if (st.knocker !== null) {
-      html += '<p class="sub" style="text-align:center;margin-top:10px;color:var(--red-soft)">Er is geklopt \u2014 dit is je laatste beurt.</p>';
+
+    if (lastLap) {
+      html += '<p class="sub" style="text-align:center;color:var(--red-soft)">' +
+        esc(st.players[st.knocker].name) + ' ' + endWayText(st) + ' \u2014 dit is je laatste beurt.</p>';
+    } else {
+      html += '<button class="btn danger" data-act="knock"' + (sel !== null ? ' disabled' : '') + '>Kloppen</button>' +
+        '<p class="sub" style="text-align:center;margin-top:10px">Kloppen of alle drie ruilen sluit de ronde: iedereen krijgt daarna nog \u00e9\u00e9n beurt.</p>';
     }
     return html;
   }
@@ -380,7 +409,7 @@ var App = (function () {
       var row = rows[i], p = st.players[row.i], lost = r.deltas[row.i];
       html += '<div class="revrow"><div class="row between" style="margin-bottom:8px">' +
         '<span class="nm' + (lost ? ' lost' : '') + '">' + esc(p.name) +
-        (r.knocker === row.i ? '<span class="sub" style="font-weight:400"> \u00B7 klopte</span>' : '') + '</span>' +
+        (r.knocker === row.i ? '<span class="sub" style="font-weight:400"> \u00B7 ' + endWayText(st, 'short') + '</span>' : '') + '</span>' +
         '<span class="row">' + (lost ? '<span class="delta">\u2212' + lost + '</span>' : '') +
         livesHTML(p) + '<span class="sc' + (row.score === 31 ? ' hot' : '') + '">' + fmt(row.score) + '</span></span>' +
         '</div><div class="hand" style="gap:6px">';
@@ -482,7 +511,8 @@ var App = (function () {
       '<p>Iedereen krijgt drie kaarten. In het midden liggen drie dichte kaarten plus \u00e9\u00e9n losse blinde kaart.</p>' +
       '<p>De beginnende speler kiest blind: zijn eigen hand houden, of ruilen met de drie dichte middenkaarten. Daarna gaat het midden open en is de volgende speler aan de beurt.</p>' +
       '<p>Op je beurt ruil je \u00e9\u00e9n kaart met het midden, ruil je alle drie tegelijk, of ruil je met de blinde kaart \u2014 de kaart die jij weggeeft wordt dan de nieuwe blinde kaart. Wil je niets, dan klop je.</p>' +
-      '<p>Na het kloppen krijgt iedereen nog \u00e9\u00e9n beurt, daarna gaan de kaarten open. De laagste hand verliest een leven. Heeft iemand 31, dan stopt de ronde meteen en verliest de rest een leven.</p>' +
+      '<p>Kloppen sluit de ronde, en alle drie tegelijk ruilen doet dat ook. Alleen de blinde ruil van de beginner telt niet mee. Daarna krijgt iedereen nog \u00e9\u00e9n beurt; in die laatste beurt mag je ook niks doen. Dan gaan de kaarten open en verliest de laagste hand een leven.</p>' +
+      '<p>Heeft iemand 31, dan stopt de ronde meteen en verliest de rest een leven.</p>' +
       '<p>Wie op nul levens komt gaat op de bok en krijgt daardoor nog \u00e9\u00e9n extra leven. Verliest hij daarna nog eens, dan ligt hij eruit. De laatste speler die overblijft wint.</p>' +
       '</div>' +
       '<button class="btn mt" data-act="home">Terug</button>';
@@ -552,7 +582,7 @@ var App = (function () {
       '<div class="eyebrow">Geef de telefoon door aan</div>' +
       '<div style="font-family:var(--serif);font-size:40px;font-weight:900;color:var(--brass);margin:10px 0 6px">' + esc(p.name) + '</div>' +
       '<div class="mb">' + livesHTML(p) + '</div>' +
-      (G.knocker !== null ? '<p style="color:var(--red-soft);font-size:14px;margin-bottom:20px">' + esc(G.players[G.knocker].name) + ' heeft geklopt \u2014 dit is je laatste beurt.</p>' : '<div style="height:20px"></div>') +
+      (G.knocker !== null ? '<p style="color:var(--red-soft);font-size:14px;margin-bottom:20px">' + esc(G.players[G.knocker].name) + ' ' + endWayText(G) + ' \u2014 dit is je laatste beurt.</p>' : '<div style="height:20px"></div>') +
       '<button class="btn primary" data-act="show">Toon mijn kaarten</button>' +
       '<button class="linkbtn mt" data-act="stop">Spel stoppen</button>' +
       '</div>';
@@ -560,7 +590,9 @@ var App = (function () {
 
   function turnDoneHTML() {
     var p = G.players[actor], b = best(p.hand);
-    var head = G.instant !== null ? 'Eenendertig!' : (G.knocker === actor ? 'Je hebt geklopt' : 'Jouw hand');
+    var head = G.instant !== null ? 'Eenendertig!'
+      : G.knocker === actor ? (G.endWay === 'swapAll' ? 'Alle drie geruild \u2014 ronde gaat dicht' : 'Je hebt geklopt')
+      : 'Jouw hand';
     var html = '<div class="hero"><div class="eyebrow mb">' + head + '</div><div class="hand center">';
     for (var i = 0; i < p.hand.length; i++) html += cardHTML(p.hand[i], { size: 'lg' });
     html += '</div><div style="max-width:260px;margin:20px auto 26px">' + meterHTML(b) + '</div>' +
