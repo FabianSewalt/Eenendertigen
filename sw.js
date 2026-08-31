@@ -3,7 +3,7 @@
    op te halen, de cache is alleen de vangnet voor offline. Versie
    ophogen bij grote wijzigingen. */
 
-const CACHE = '31en-v1.1.0';
+const CACHE = '31en-v1.2.0';
 
 const ASSETS = [
   './',

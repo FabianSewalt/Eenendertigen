@@ -7,7 +7,7 @@
 
 var App = (function () {
 
-  var VERSION = '1.1.0';
+  var VERSION = '1.2.0';
 
   /* ---------------- kaarten ---------------- */
 
@@ -61,7 +61,7 @@ var App = (function () {
   var DEFAULTS = {
     names: ['Speler 1', 'Speler 2', 'Speler 3'],
     lives: 3,
-    rules: { bokMode: 'first', knockPenalty: false, instant31: true, allowPass: false }
+    rules: { bokMode: 'first', knockPenalty: false, thirtyOne: 'lowest', allowPass: false }
   };
   var S = clone(DEFAULTS);
 
@@ -180,7 +180,7 @@ var App = (function () {
 
   function endTurn(g) {
     var sc = best(g.players[g.current].hand).score;
-    if (g.rules.instant31 && sc === 31) { g.instant = g.current; return reveal(g); }
+    if (g.rules.thirtyOne !== 'off' && sc === 31) { g.instant = g.current; return reveal(g); }
     if (g.knocker !== null && nextIdx(g, g.current) === g.knocker) return reveal(g);
     if (g.rules.allowPass && g.knocker === null && g.passStreak >= activeCount(g)) {
       if (g.deck.length >= 3) {
@@ -213,7 +213,9 @@ var App = (function () {
       rows.push({ i: i, score: b.score, suit: b.suit, hand: clone(g.players[i].hand) });
     }
     var losers = [], deltas = {}, min, k;
-    if (g.instant !== null) {
+    /* Standaard verliest alleen de laagste hand een leven, ook als er
+       iemand 31 had. Met de huisregel 'all' betaalt de hele rest. */
+    if (g.instant !== null && g.rules.thirtyOne === 'all') {
       for (k = 0; k < rows.length; k++) if (rows[k].i !== g.instant) losers.push(rows[k].i);
     } else {
       min = rows[0].score;
@@ -401,7 +403,7 @@ var App = (function () {
     html += '<h1 class="title">' + title + '</h1>';
     html += '<p class="sub mb">' + (r.draw
       ? 'Even laag, en allebei het laatste leven kwijt \u2014 niemand wint.'
-      : r.instant !== null
+      : r.instant !== null && st.rules.thirtyOne === 'all'
         ? 'Iedereen behalve hem verliest een leven.'
         : 'Laagste hand verliest een leven.') + '</p>';
 
@@ -436,11 +438,12 @@ var App = (function () {
     toastTimer = setTimeout(function () { toastEl.innerHTML = ''; }, 3200);
   }
 
-  function confirmStop(onYes) {
-    modal('<div class="sheet"><h2>Spel stoppen?</h2>' +
-      '<p class="sub" style="margin:0 0 18px">De stand en de levens gaan verloren.</p>' +
-      '<div class="pair"><button class="btn" data-act="stopNo">Doorspelen</button>' +
-      '<button class="btn danger" data-act="stopYes">Stoppen</button></div></div>');
+  function confirmStop(onYes, opts) {
+    opts = opts || {};
+    modal('<div class="sheet"><h2>' + esc(opts.title || 'Spel stoppen?') + '</h2>' +
+      '<p class="sub" style="margin:0 0 18px">' + esc(opts.body || 'De stand en de levens gaan verloren.') + '</p>' +
+      '<div class="pair"><button class="btn" data-act="stopNo">' + esc(opts.no || 'Doorspelen') + '</button>' +
+      '<button class="btn danger" data-act="stopYes">' + esc(opts.yes || 'Stoppen') + '</button></div></div>');
     stopCallback = onYes;
   }
   var stopCallback = null;
@@ -512,7 +515,7 @@ var App = (function () {
       '<p>De beginnende speler kiest blind: zijn eigen hand houden, of ruilen met de drie dichte middenkaarten. Daarna gaat het midden open en is de volgende speler aan de beurt.</p>' +
       '<p>Op je beurt ruil je \u00e9\u00e9n kaart met het midden, ruil je alle drie tegelijk, of ruil je met de blinde kaart \u2014 de kaart die jij weggeeft wordt dan de nieuwe blinde kaart. Wil je niets, dan klop je.</p>' +
       '<p>Kloppen sluit de ronde, en alle drie tegelijk ruilen doet dat ook. Alleen de blinde ruil van de beginner telt niet mee. Daarna krijgt iedereen nog \u00e9\u00e9n beurt; in die laatste beurt mag je ook niks doen. Dan gaan de kaarten open en verliest de laagste hand een leven.</p>' +
-      '<p>Heeft iemand 31, dan stopt de ronde meteen en verliest de rest een leven.</p>' +
+      '<p>Heeft iemand 31, dan stopt de ronde meteen. Ook dan verliest alleen de laagste hand een leven, tenzij je bij de huisregels anders instelt.</p>' +
       '<p>Wie op nul levens komt gaat op de bok en krijgt daardoor nog \u00e9\u00e9n extra leven. Verliest hij daarna nog eens, dan ligt hij eruit. De laatste speler die overblijft wint.</p>' +
       '</div>' +
       '<button class="btn mt" data-act="home">Terug</button>';
@@ -547,7 +550,8 @@ var App = (function () {
     var rows = [
       ['bok', 'Op de bok mag', r.bokMode === 'all' ? 'iedereen, 1\u00D7 per speler' : 'alleen de eerste die leeg is'],
       ['knock', 'Klopper met laagste hand', r.knockPenalty ? 'verliest 2 levens' : 'verliest 1 leven'],
-      ['inst', '31 in de hand', r.instant31 ? 'meteen open, rest verliest een leven' : 'gewoon doorspelen'],
+      ['inst', '31 in de hand', r.thirtyOne === 'all' ? 'stopt de ronde, de rest verliest een leven'
+        : r.thirtyOne === 'off' ? 'geen speciale regel' : 'stopt de ronde, laagste verliest een leven'],
       ['pass', 'Passen zonder kloppen', r.allowPass ? 'mag' : 'kan niet \u2014 niks doen is kloppen']
     ];
     var html = '<div class="panel"><div class="eyebrow" style="margin-bottom:6px">Huisregels</div>';
@@ -562,7 +566,7 @@ var App = (function () {
     var r = S.rules;
     if (which === 'bok') r.bokMode = r.bokMode === 'all' ? 'first' : 'all';
     if (which === 'knock') r.knockPenalty = !r.knockPenalty;
-    if (which === 'inst') r.instant31 = !r.instant31;
+    if (which === 'inst') r.thirtyOne = r.thirtyOne === 'lowest' ? 'all' : r.thirtyOne === 'all' ? 'off' : 'lowest';
     if (which === 'pass') r.allowPass = !r.allowPass;
     saveSettings();
   }

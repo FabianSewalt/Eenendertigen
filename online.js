@@ -142,6 +142,10 @@ var Online = (function () {
         if (!O.isHost) { App.ui.toast('De host heeft het spel gestopt.'); return leave(false); }
         return;
       }
+      if (msg.phase === 'lobby') {
+        O.state = null; O.hand = null; O.view = 'lobby'; sel = null;
+        return render();
+      }
       O.state = msg;
       O.view = 'game';
       if (msg.note) App.ui.toast(msg.note);
@@ -215,10 +219,28 @@ var Online = (function () {
   function hostStart() {
     var meta = O.lobby.players.map(function (p) { return { name: p.name, pid: p.pid }; });
     if (meta.length < 2) return App.ui.toast('Je hebt minstens twee spelers nodig.');
+    var S = App.settings();
+    O.lobby.lives = S.lives;
+    O.lobby.rules = App.clone(S.rules);
+    O.lobby.played = true;
     O.game = App.engine.newGame(meta, O.lobby.lives, O.lobby.rules);
     O.lobby.started = true;
     hostPublishLobby();
     hostPushState();
+  }
+
+  /* Potje afgelopen (of afgebroken): iedereen terug naar de lobby, de
+     kamer blijft open zodat je meteen opnieuw kunt beginnen. */
+  function hostToLobby() {
+    var ps = (O.lobby && O.lobby.players) || [];
+    for (var i = 0; i < ps.length; i++) pub(O.t.p(ps[i].pid), null, true);
+    O.game = null;
+    O.state = null;
+    O.hand = null;
+    O.view = 'lobby';
+    if (O.lobby) O.lobby.started = false;
+    pub(O.t.state, { phase: 'lobby' }, true);
+    hostPublishLobby();
   }
 
   function hostNextRound() {
@@ -294,10 +316,17 @@ var Online = (function () {
     html += '</div>';
 
     if (O.isHost) {
-      html += '<button class="btn primary" data-act="oStart"' + (ps.length < 2 ? ' disabled' : '') + '>Spel starten</button>';
+      var S = App.settings();
+      html += '<div class="panel"><div class="row between"><span>Levens per speler</span><div class="stepper">' +
+        '<button data-act="oLives:-1">\u2212</button><span class="val">' + S.lives + '</span>' +
+        '<button data-act="oLives:1">+</button></div></div></div>';
+      html += App.ui.rulesPanelHTML();
+      html += '<button class="btn primary" data-act="oStart"' + (ps.length < 2 ? ' disabled' : '') + '>' +
+        (O.lobby && O.lobby.played ? 'Nieuw potje starten' : 'Spel starten') + '</button>';
       if (ps.length < 2) html += '<p class="sub" style="text-align:center;margin-top:10px">Wachten op minstens \u00e9\u00e9n medespeler.</p>';
     } else {
-      html += '<p class="sub" style="text-align:center">Wachten tot de host start\u2026</p>';
+      html += '<p class="sub" style="text-align:center">' +
+        (O.lobby && O.lobby.played ? 'Wachten tot de host een nieuw potje start\u2026' : 'Wachten tot de host start\u2026') + '</p>';
     }
     return html;
   }
@@ -310,10 +339,11 @@ var Online = (function () {
       var html = App.ui.revealHTML(st);
       if (O.isHost) {
         html += '<div class="mt">' + (st.phase === 'gameover'
-          ? '<button class="btn primary" data-act="oEnd">Spel afsluiten</button>'
+          ? '<button class="btn primary" data-act="oLobby">Terug naar de lobby</button>'
           : '<button class="btn primary" data-act="oNext">Volgende ronde</button>') + '</div>';
       } else {
-        html += '<p class="sub mt" style="text-align:center">Wachten op de host\u2026</p>';
+        html += '<p class="sub mt" style="text-align:center">' +
+          (st.phase === 'gameover' ? 'Wachten tot de host terug naar de lobby gaat\u2026' : 'Wachten op de host\u2026') + '</p>';
       }
       return html;
     }
@@ -347,12 +377,16 @@ var Online = (function () {
     if (act === 'oJoinForm') return joinForm();
     if (act === 'rules') { App.ui.setHandler(App.ui.localHandler()); return App.go('rules'); }
 
+    var inLobby = O && O.view === 'lobby';
     if (act.indexOf('oLives:') === 0) {
       S.lives = Math.max(1, Math.min(9, S.lives + (+act.split(':')[1])));
       App.saveSettings();
-      return createForm();
+      return inLobby ? render() : createForm();
     }
-    if (act.indexOf('rule:') === 0) { App.ui.toggleRule(act.split(':')[1]); return createForm(); }
+    if (act.indexOf('rule:') === 0) {
+      App.ui.toggleRule(act.split(':')[1]);
+      return inLobby ? render() : createForm();
+    }
 
     if (act === 'oMake') {
       el = document.getElementById('oName');
@@ -399,9 +433,32 @@ var Online = (function () {
       }
       return;
     }
-    if (act === 'oEnd') return App.ui.confirmStop(function () { leave(true); });
-    if (act === 'oLeave') return App.ui.confirmStop(function () { leave(O && O.isHost); });
-    if (act === 'stop') return App.ui.confirmStop(function () { leave(O && O.isHost); });
+    if (act === 'oLobby') return hostToLobby();
+    if (act === 'oLeave') {
+      return App.ui.confirmStop(function () { leave(O && O.isHost); }, {
+        title: O && O.isHost ? 'Kamer sluiten?' : 'Kamer verlaten?',
+        body: O && O.isHost
+          ? 'De kamer verdwijnt en de anderen vliegen eruit.'
+          : 'Je kunt later opnieuw meedoen met dezelfde code.',
+        yes: O && O.isHost ? 'Sluiten' : 'Verlaten'
+      });
+    }
+    if (act === 'stop') {
+      /* Aan tafel: de host breekt het potje af maar houdt de kamer open,
+         een medespeler stapt uit de kamer. */
+      if (O && O.isHost) {
+        return App.ui.confirmStop(hostToLobby, {
+          title: 'Potje stoppen?',
+          body: 'De stand en de levens gaan verloren. De kamer blijft open, je kunt meteen opnieuw beginnen.',
+          yes: 'Naar de lobby'
+        });
+      }
+      return App.ui.confirmStop(function () { leave(false); }, {
+        title: 'Kamer verlaten?',
+        body: 'Je kunt later opnieuw meedoen met dezelfde code.',
+        yes: 'Verlaten'
+      });
+    }
 
     /* zetten aan tafel */
     if (!O || !O.state || O.state.phase !== 'turn') return;
